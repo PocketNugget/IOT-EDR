@@ -134,15 +134,16 @@ async def get_logs():
 @app.post("/api/action")
 async def trigger_action(req: ActionRequest):
     """
-    Valid actions via SOC: ota, restore
+    Valid SOC defensive actions: quarantine (manual isolation), restore
+    NOTE: 'attack' is intentionally excluded — use external attack_scripts/ instead.
     """
-    valid_actions = ["ota", "restore"]
+    valid_actions = ["quarantine", "restore"]
     if req.action not in valid_actions:
         return {"status": "error", "message": "Security Exception: Invalid or malicious command vector blocked."}
         
     control_payload = {"action": req.action}
     mqtt_client.publish(f"home/control/{req.device_id}", json.dumps(control_payload))
-    return {"status": "success", "message": f"Remote Node {req.action} successfully dispatched to {req.device_id}"}
+    return {"status": "success", "message": f"[SOC] Action '{req.action}' dispatched to {req.device_id}"}
 
 
 

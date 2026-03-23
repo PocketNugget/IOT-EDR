@@ -21,6 +21,7 @@ class SmartDevice:
         self.status = "OFF"          # Physical power state
         self.attack_mode = False
         self.ota_mode = False
+        self.restore_status = "OFF"  # Override per device to its natural idle state
 
         # Subscribe to control commands
         self.client.subscribe(f"home/control/{self.device_id}")
@@ -30,7 +31,7 @@ class SmartDevice:
             self.status = "QUARANTINED"
             self.attack_mode = False
         elif action == "restore":
-            self.status = "OFF"      # Goes back to normal off state
+            self.status = self.restore_status  # Return to device-specific idle state
             self.attack_mode = False
             self.ota_mode = False
         elif action == "attack":
@@ -68,7 +69,7 @@ class SmartDevice:
 class SmartBulb(SmartDevice):
     def __init__(self, device_id, mqtt_client):
         super().__init__(device_id, "bulb", mqtt_client)
-        # Random initial power state
+        self.restore_status = "ON"   # Bulbs restore to ON (not OFF)
         self.status = random.choice(["ON", "OFF"])
 
     async def run(self):
@@ -130,6 +131,7 @@ class SmartBulb(SmartDevice):
 class SmartSwitch(SmartDevice):
     def __init__(self, device_id, mqtt_client):
         super().__init__(device_id, "switch", mqtt_client)
+        self.restore_status = "OFF"  # Switches restore to off (safe default)
         self.status = "OFF"
 
     async def run(self):
@@ -194,7 +196,8 @@ class SmartSwitch(SmartDevice):
 class SmartHub(SmartDevice):
     def __init__(self, device_id, mqtt_client):
         super().__init__(device_id, "hub", mqtt_client)
-        self.status = "ON"   # Hub is always-on
+        self.restore_status = "ON"  # Hub is always-on — restore goes back to ON
+        self.status = "ON"
 
     async def run(self):
         while True:
@@ -242,6 +245,7 @@ class RobotVacuum(SmartDevice):
     """
     def __init__(self, device_id, mqtt_client):
         super().__init__(device_id, "roomba", mqtt_client)
+        self.restore_status = "CHARGING"   # Roomba returns to dock after restore
         self.status = "CHARGING"
         self._cleaning_ticks = 0
 
@@ -299,6 +303,7 @@ class SprinklerSystem(SmartDevice):
     """
     def __init__(self, device_id, mqtt_client):
         super().__init__(device_id, "sprinkler", mqtt_client)
+        self.restore_status = "IDLE"   # Sprinkler returns to idle after restore
         self.status = "IDLE"
         self._watering_ticks = 0
 
