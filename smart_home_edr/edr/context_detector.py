@@ -19,111 +19,87 @@ INFLUX_ORG = os.getenv("INFLUX_ORG", "soc_org")
 INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "telemetry")
 
 # ── Context-Aware Models — one per device profile ──
+# contamination=0.005 → only truly extreme outliers flagged
+# This prevents normal ON/OFF/CHARGING traffic variance from causing false positives
 ml_models = {
-    "bulb":     IsolationForest(contamination=0.02, random_state=42, n_estimators=100),
-    "switch":   IsolationForest(contamination=0.02, random_state=42, n_estimators=100),
-    "hub":      IsolationForest(contamination=0.02, random_state=42, n_estimators=100),
-    "roomba":   IsolationForest(contamination=0.02, random_state=42, n_estimators=100),
-    "sprinkler":IsolationForest(contamination=0.02, random_state=42, n_estimators=100),
+    "bulb":     IsolationForest(contamination=0.005, random_state=42, n_estimators=150),
+    "switch":   IsolationForest(contamination=0.005, random_state=42, n_estimators=150),
+    "hub":      IsolationForest(contamination=0.005, random_state=42, n_estimators=150),
+    "roomba":   IsolationForest(contamination=0.005, random_state=42, n_estimators=150),
+    "sprinkler":IsolationForest(contamination=0.005, random_state=42, n_estimators=150),
 }
 
 anomaly_tracker: dict[str, int] = {}
-PERSISTENCE_THRESHOLD = 3
+clean_streak:    dict[str, int] = {}   # consecutive clean readings
+
+# Must sustain 8 anomaly signals before auto-isolation.
+# A real attack generates sustained abnormal traffic — not occasional spikes.
+PERSISTENCE_THRESHOLD = 8
+CLEAN_RESET_STREAK = 3   # consecutive clean ticks needed to reset strike counter
 
 
 def pre_train_models():
     logging.info("🧠 Pre-training Context-Aware Models for all Smart Home profiles...")
 
-    training_data = {
-        # [bytes_in, bytes_out, port, packet_rate]
-        "bulb": {
-            "normal": lambda: [
-                max(0, np.random.normal(50, 10)),
-                max(0, np.random.normal(20, 5)),
-                80,
-                np.random.poisson(2)
-            ],
-            "ota": lambda: [
-                max(0, np.random.normal(15000, 2000)),
-                max(0, np.random.normal(500, 50)),
-                443,
-                np.random.poisson(100)
-            ],
-        },
-        "switch": {
-            "normal": lambda: [
-                max(0, np.random.normal(10, 2)),
-                max(0, np.random.normal(15, 3)),
-                8080,
-                np.random.poisson(1)
-            ],
-            "ota": lambda: [
-                max(0, np.random.normal(12000, 1000)),
-                max(0, np.random.normal(400, 40)),
-                443,
-                np.random.poisson(80)
-            ],
-        },
-        "hub": {
-            "normal": lambda: [
-                max(0, np.random.normal(2000, 300)),
-                max(0, np.random.normal(3500, 500)),
-                8443,
-                np.random.poisson(45)
-            ],
-            "ota": lambda: [
-                max(0, np.random.normal(30000, 5000)),
-                max(0, np.random.normal(2000, 200)),
-                443,
-                np.random.poisson(250)
-            ],
-        },
-        # Roomba: CHARGING (standby) + CLEANING (high BW)
-        "roomba": {
-            "normal": lambda: (
-                [max(0, np.random.normal(8000, 1000)),
-                 max(0, np.random.normal(12000, 2000)),
-                 443,
-                 np.random.poisson(80)]
-                if np.random.random() < 0.35   # 35% cleaning, 65% charging
-                else [random.randint(0, 10), random.randint(0, 10), 443, 0]
-            ),
-            "ota": lambda: [
-                max(0, np.random.normal(20000, 3000)),
-                max(0, np.random.normal(1000, 100)),
-                443,
-                np.random.poisson(150)
-            ],
-        },
-        # Sprinkler: IDLE (near-zero) + WATERING (short bursts)
-        "sprinkler": {
-            "normal": lambda: (
-                [max(0, np.random.normal(3000, 400)),
-                 max(0, np.random.normal(800, 100)),
-                 443,
-                 np.random.poisson(30)]
-                if np.random.random() < 0.15   # 15% watering, 85% idle
-                else [random.randint(0, 20), random.randint(0, 10), 443, 0]
-            ),
-            "ota": lambda: [
-                max(0, np.random.normal(5000, 500)),
-                max(0, np.random.normal(300, 30)),
-                443,
-                np.random.poisson(40)
-            ],
-        },
+    import random
+
+    # Each profile covers ALL legitimate states the device can be in:
+    # standby/OFF/IDLE (0 traffic), active/ON traffic, and OTA bursts.
+    # This prevents the model from treating zero-traffic (OFF state) as anomalous.
+    profile_samples = {
+        "bulb": [
+            # 50% OFF standby heartbeats
+            *[[random.randint(0, 5), random.randint(0, 5), 80, 0]
+              for _ in range(700)],
+            # 45% ON — normal mdns/hub pings
+            *[[max(0, np.random.normal(50, 15)), max(0, np.random.normal(20, 6)), 80, max(0, int(np.random.poisson(2)))]
+              for _ in range(600)],
+            # 5% OTA update (heavy but on 443)
+            *[[max(0, np.random.normal(15000, 2000)), max(0, np.random.normal(500, 50)), 443, max(0, int(np.random.poisson(100)))]
+              for _ in range(100)],
+        ],
+        "switch": [
+            # 55% OFF heartbeat
+            *[[random.randint(0, 5), random.randint(0, 5), 8080, 0]
+              for _ in range(600)],
+            # 40% ON — occasional bursts
+            *[[max(0, np.random.normal(60, 20)), max(0, np.random.normal(80, 25)), 8080, max(0, int(np.random.poisson(8)))]
+              for _ in range(500)],
+            # 5% OTA
+            *[[max(0, np.random.normal(12000, 1000)), max(0, np.random.normal(400, 40)), 443, max(0, int(np.random.poisson(80)))]
+              for _ in range(100)],
+        ],
+        "hub": [
+            # Hub is always on — only variance matters
+            *[[max(0, np.random.normal(2000, 400)), max(0, np.random.normal(3500, 600)), 8443, max(0, int(np.random.poisson(45)))]
+              for _ in range(1100)],
+            # OTA
+            *[[max(0, np.random.normal(30000, 5000)), max(0, np.random.normal(2000, 200)), 443, max(0, int(np.random.poisson(250)))]
+              for _ in range(100)],
+        ],
+        "roomba": [
+            # 65% CHARGING — docked, near-zero traffic
+            *[[random.randint(0, 10), random.randint(0, 10), 443, 0]
+              for _ in range(750)],
+            # 35% CLEANING — LiDAR map upload
+            *[[max(0, np.random.normal(8000, 1500)), max(0, np.random.normal(12000, 2500)), 443, max(0, int(np.random.poisson(80)))]
+              for _ in range(350)],
+        ],
+        "sprinkler": [
+            # 85% IDLE — near-zero weather API ping
+            *[[random.randint(0, 20), random.randint(0, 10), 443, 0]
+              for _ in range(950)],
+            # 15% WATERING — HTTPS bursts
+            *[[max(0, np.random.normal(3000, 500)), max(0, np.random.normal(800, 120)), 443, max(0, int(np.random.poisson(30)))]
+              for _ in range(250)],
+        ],
     }
 
-    import random  # local import to avoid polluting module namespace above
     for profile, model in ml_models.items():
-        X_train = []
-        data = training_data[profile]
-        for _ in range(1000):
-            X_train.append(data["normal"]())
-        for _ in range(200):
-            X_train.append(data["ota"]())
+        X_train = profile_samples[profile]
+        random.shuffle(X_train)
         model.fit(X_train)
-        logging.info(f"✅ Profile '{profile}' — IsolationForest trained ({len(X_train)} samples).")
+        logging.info(f"✅ Profile '{profile}' — trained on {len(X_train)} samples covering all operational states.")
 
 
 def on_connect(client, userdata, flags, rc):
@@ -162,21 +138,28 @@ def on_message(client, userdata, msg):
         normalized_score = float(-raw_score)
         is_anomaly = 1 if prediction == -1 else 0
 
-        # ── Persistence tracker ──
+        # ── Persistence tracker with clean-streak reset ──
         if device_id not in anomaly_tracker:
             anomaly_tracker[device_id] = 0
+            clean_streak[device_id] = 0
 
         if is_anomaly:
             anomaly_tracker[device_id] += 1
+            clean_streak[device_id] = 0    # reset clean streak on any anomaly
             logging.warning(
                 f"[{device_id}] Anomaly detected (profile={device_type}) "
-                f"Strike {anomaly_tracker[device_id]}/{PERSISTENCE_THRESHOLD}"
+                f"Strike {anomaly_tracker[device_id]}/{PERSISTENCE_THRESHOLD} | Score={normalized_score:.3f}"
             )
             if anomaly_tracker[device_id] >= PERSISTENCE_THRESHOLD:
                 enforce_quarantine(client, device_id)
                 anomaly_tracker[device_id] = 0
+                clean_streak[device_id] = 0
         else:
-            anomaly_tracker[device_id] = max(0, anomaly_tracker[device_id] - 1)
+            clean_streak[device_id] += 1
+            # Only forgive strikes after CLEAN_RESET_STREAK consecutive normal readings
+            if clean_streak[device_id] >= CLEAN_RESET_STREAK:
+                anomaly_tracker[device_id] = max(0, anomaly_tracker[device_id] - 1)
+                clean_streak[device_id] = 0
 
         # ── Write to InfluxDB ──
         with InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG) as idb:
