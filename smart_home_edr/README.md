@@ -13,9 +13,32 @@ Desarrollada para ejecutar en `linux/arm64` como la Raspberry Pi 5.
 5. **Backend FastAPI:** Endpoints API que mapean el inventario Smart y tuberías en tiempo real de WebSocket.
 6. **React SOC Dashboard:** Grid matricial renderizando el plano físico de la vivienda y exponiendo terminales de logs contextuales y scores estadísticos.
 
-## 🚀 Despliegue Inicial (Fase 1)
+## 🚀 Despliegue Inicial 
 
 ```bash
 cd smart_home_edr
 docker-compose up -d --build
+```
+
+### 🛰️ Puntos de Acceso Externos Mapeados
+Debido a colisiones de red, el sistema orquesta sobre los siguientes puertos libres:
+- **Frontend SOC Dashboard:** `http://localhost:3002`
+- **Backend FastAPI / Swagger:** `http://localhost:8002/docs`
+- **InfluxDB v2 UI:** `http://localhost:8086` (Usuario: `admin`, Clave: `adminpassword`)
+- **Mosquitto MQTT:** Puerto nativo `1883`
+
+### 🏴‍☠️ Auditoría de Ciberseguridad (Scripts C2)
+Existen algoritmos *red-team* embebidos listos para disparar ráfagas anómalas e intentar evadir el análisis contextual del motor *IsolationForest*:
+
+```bash
+pip install requests
+
+# 1. Infecta el Smart Switch (Anomalía: Escaneo HTTP)
+python attack_scripts/01_mirai_botnet_scan.py
+
+# 2. Orquesta Ransomware en el Hub
+python attack_scripts/02_ransomware_lateral.py
+
+# 3. Zombifica el Smart Bulb inyectando un DDoS Flood Outbound
+python attack_scripts/03_ddos_flood.py
 ```
