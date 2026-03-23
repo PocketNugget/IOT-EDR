@@ -1,102 +1,77 @@
 import os
 import time
 import json
-import threading
+import logging
 import paho.mqtt.client as mqtt
 
-# Configuración MQTT
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
-SCORES_TOPIC = "edr/scores/+"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - ResponseHandler - %(message)s')
 
-# Estado de dispositivos y anomalías
-consecutive_anomalies = {}
-quarantined_devices = set()
-lock = threading.Lock()
+BROKER = os.getenv("MQTT_BROKER", "mosquitto")
+PORT = int(os.getenv("MQTT_PORT", 1883))
+EVAL_TOPIC = "edr/evaluation"
 
-def check_anomaly(device_id, is_anomaly, score, client):
-    with lock:
-        if device_id in quarantined_devices:
-            return  # Ya fue aislado, ignorar
-
-        if is_anomaly:
-            count = consecutive_anomalies.get(device_id, 0) + 1
-            consecutive_anomalies[device_id] = count
-            
-            print(f"[ResponseHandler] Alerta en {device_id}. Anomaly Score: {score:.3f}. Racha: {count}/5")
-            
-            if count >= 5: # Reducción de Falsos Positivos
-                print(f"[ResponseHandler] => ¡Peligo Crítico! EDR accionando cuarentena autónoma en {device_id}")
-                
-                # Accion 1: Publicar alerta en bus de incidentes
-                alert = {
-                    "severity": "CRITICAL",
-                    "device_id": device_id,
-                    "reason": "Anomalía persistente detectada (Posible Zero-Day/Botnet)",
-                    "action_taken": "QUARANTINE_ISSUED",
-                    "timestamp": time.time()
-                }
-                client.publish("alerts/critical", json.dumps(alert))
-                
-                # Accion 2: Ordenar aislamiento via MQTT al IoT edge control hub
-                control_cmd = {"action": "quarantine"}
-                client.publish(f"control/{device_id}", json.dumps(control_cmd))
-                
-                quarantined_devices.add(device_id)
-                consecutive_anomalies[device_id] = 0
-        else:
-            # Si hay un payload normal, resetear contador de racha
-            if device_id in consecutive_anomalies and consecutive_anomalies[device_id] > 0:
-                print(f"[ResponseHandler] {device_id} reportó tráfico normal. Reseteando racha de anomalías.")
-            consecutive_anomalies[device_id] = 0
+# Mechanism dictionary to track the persistance algorithm and decrease False Positives (FPs)
+anomaly_tracker = {}
+PERSISTENCE_THRESHOLD = 5
 
 def on_connect(client, userdata, flags, rc):
-    print(f"[ResponseHandler] Conectado a MQTT Broker con código {rc}")
-    client.subscribe(SCORES_TOPIC)
-    client.subscribe("control/+") # Para escuchar cuando alguien restaura manualmente
+    logging.info(f"Connected to Mosquitto (code {rc}). Awaiting analytics from Detector ML.")
+    client.subscribe(EVAL_TOPIC)
+
+def enforce_quarantine(client, sensor_id):
+    logging.warning(f"🚨 ACTIVE RESPONSE TRIGGERED! Quarantining {sensor_id}.")
     
+    # Send highly critical alert packet
+    alert_payload = {
+        "level": "CRITICAL",
+        "sensor_id": sensor_id,
+        "reason": "Persistent Network Anomaly Detected (Zero-Day Exfiltration sequence observed)",
+        "timestamp": time.time()
+    }
+    client.publish("alerts/critical", json.dumps(alert_payload))
+    
+    # Execute Auto-quarantine mitigation
+    control_payload = {"action": "quarantine"}
+    client.publish(f"control/{sensor_id}", json.dumps(control_payload))
+
 def on_message(client, userdata, msg):
     try:
-        topic = msg.topic
-        payload = json.loads(msg.payload.decode("utf-8"))
+        payload = json.loads(msg.payload.decode())
+        sensor_id = payload.get("sensor_id")
+        is_anomaly = payload.get("is_anomaly")
         
-        # Detectar comandos de restauración de red
-        if topic.startswith("control/"):
-            device_id = topic.split("/")[1]
-            if payload.get("action") == "restore":
-                with lock:
-                    if device_id in quarantined_devices:
-                        print(f"[ResponseHandler] Cuarentena levantada para {device_id}. EDR restaurando monitorización normal.")
-                        quarantined_devices.remove(device_id)
-                        consecutive_anomalies[device_id] = 0
-            return
+        if not sensor_id: return
+        
+        if sensor_id not in anomaly_tracker:
+            anomaly_tracker[sensor_id] = 0
             
-        # Analisis continuo
-        if topic.startswith("edr/scores/"):
-            is_anomaly = payload.get("is_anomaly")
-            score = payload.get("score")
-            device_id = payload.get("device_id")
+        if is_anomaly == 1:
+            anomaly_tracker[sensor_id] += 1
+            logging.warning(f"Anomalous telemetry from {sensor_id}! Strike {anomaly_tracker[sensor_id]}/{PERSISTENCE_THRESHOLD}")
             
-            check_anomaly(device_id, is_anomaly, score, client)
-            
+            # If the evaluated threat persists beyond the threshold logic
+            if anomaly_tracker[sensor_id] >= PERSISTENCE_THRESHOLD:
+                enforce_quarantine(client, sensor_id)
+                anomaly_tracker[sensor_id] = 0 # reset tracking mechanism after quarantine mitigation
+        else:
+            if anomaly_tracker[sensor_id] > 0:
+                logging.info(f"Traffic normalized for {sensor_id}. Clearing anomaly tracking pipeline.")
+                anomaly_tracker[sensor_id] = 0
+                
     except Exception as e:
-        print(f"[ResponseHandler] Error: {e}")
-
-def main():
-    client = mqtt.Client(client_id="edr_responder")
-    client.on_connect = on_connect
-    client.on_message = on_message
-
-    connected = False
-    while not connected:
-        try:
-            client.connect(MQTT_BROKER, MQTT_PORT, 60)
-            connected = True
-        except Exception as e:
-            print(f"[ResponseHandler] Esperando broker MQTT... {e}")
-            time.sleep(2)
-
-    client.loop_forever()
+        logging.error(f"Error handling event tracking evaluation: {e}")
 
 if __name__ == "__main__":
-    main()
+    client = mqtt.Client(client_id="edr_response_handler")
+    client.on_connect = on_connect
+    client.on_message = on_message
+    
+    while True:
+        try:
+            client.connect(BROKER, PORT, 60)
+            break
+        except Exception:
+            logging.info("Waiting for broker connection map...")
+            time.sleep(3)
+            
+    client.loop_forever()

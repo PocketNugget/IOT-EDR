@@ -1,17 +1,15 @@
 import os
-import time
 import json
+import time
 import asyncio
-import threading
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
+app = FastAPI(title="IoT Edge EDR API", description="Control Plane & Telemetry WebSocket for SoC Dashboard")
 
-app = FastAPI(title="Edge EDR API")
-
+# Enable CORS fully to allow the standalone React Vite UI visualization
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,87 +18,86 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Estado global para enviar al frontend
-# device_id -> { "telemetry": {...}, "score": {...} }
-state = {}
-alerts = []
-state_lock = threading.Lock()
+BROKER = os.getenv("MQTT_BROKER", "mosquitto")
+PORT = int(os.getenv("MQTT_PORT", 1883))
+
+# In-memory transient caching of real-time MQTT payload for Fast-WebSocket distribution 
+# (Bypassing direct InfluxDB polling for ultra-low latency dashboard UX)
+latest_telemetry = {}
 
 mqtt_client = mqtt.Client(client_id="fastapi_backend")
 
 def on_connect(client, userdata, flags, rc):
-    print(f"[Backend] Conectado a MQTT con código {rc}")
+    print(f"Backend connected to Broker (Code: {rc}). Syncing state streams.")
     client.subscribe("telemetry/#")
-    client.subscribe("edr/scores/#")
-    client.subscribe("alerts/critical")
+    client.subscribe("edr/evaluation")
 
 def on_message(client, userdata, msg):
-    global state, alerts
+    global latest_telemetry
     try:
         topic = msg.topic
-        payload = json.loads(msg.payload.decode("utf-8"))
+        payload = json.loads(msg.payload.decode())
         
-        with state_lock:
-            if topic.startswith("telemetry/"):
-                device_id = payload.get("device_id")
-                if device_id not in state:
-                    state[device_id] = {"telemetry": {}, "score": {}}
-                state[device_id]["telemetry"] = payload
-                
-            elif topic.startswith("edr/scores/"):
-                device_id = payload.get("device_id")
-                if device_id not in state:
-                    state[device_id] = {"telemetry": {}, "score": {}}
-                state[device_id]["score"] = payload
-                
-            elif topic.startswith("alerts/critical"):
-                alerts.append(payload)
-                if len(alerts) > 50:
-                    alerts.pop(0)
-
+        if topic.startswith("telemetry/"):
+            sensor_id = payload.get("sensor_id")
+            if sensor_id not in latest_telemetry:
+                latest_telemetry[sensor_id] = {}
+            latest_telemetry[sensor_id].update(payload)
+            
+        elif topic == "edr/evaluation":
+            sensor_id = payload.get("sensor_id")
+            if sensor_id in latest_telemetry:
+                # Merge anomaly scoring back into main telemetry metrics map
+                latest_telemetry[sensor_id]["anomaly_score"] = payload.get("anomaly_score")
+                latest_telemetry[sensor_id]["is_anomaly"] = payload.get("is_anomaly")
     except Exception as e:
-        print(f"[Backend] Error processing msg: {e}")
+        print(f"MQTT Parsing Error in Backend Bus: {e}")
 
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
+def start_mqtt():
+    """Connects to the event bus in the startup phase."""
+    while True:
+        try:
+            mqtt_client.connect(BROKER, PORT, 60)
+            break
+        except Exception:
+            time.sleep(2)
+    mqtt_client.loop_start()
+
 @app.on_event("startup")
-def startup_event():
-    # Iniciar cliente MQTT en background
-    def run_mqtt():
-        connected = False
-        while not connected:
-            try:
-                mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-                connected = True
-            except:
-                time.sleep(2)
-        mqtt_client.loop_forever()
-        
-    threading.Thread(target=run_mqtt, daemon=True).start()
+async def startup_event():
+    start_mqtt()
 
-@app.post("/api/attack/{device_id}")
-async def trigger_attack(device_id: str):
-    mqtt_client.publish(f"control/{device_id}", json.dumps({"action": "attack"}))
-    return {"status": f"Attack initiated on {device_id}"}
+class ActionRequest(BaseModel):
+    sensor_id: str
 
-@app.post("/api/restore/{device_id}")
-async def trigger_restore(device_id: str):
-    mqtt_client.publish(f"control/{device_id}", json.dumps({"action": "restore"}))
-    return {"status": f"Restore initiated on {device_id}"}
+@app.post("/api/attack")
+async def trigger_attack(req: ActionRequest):
+    """Inyecta trafico ofensivo zero-day en el sensor especificado (Under Attack Mode)"""
+    control_payload = {"action": "attack"}
+    mqtt_client.publish(f"control/{req.sensor_id}", json.dumps(control_payload))
+    return {"status": "success", "message": f"Zero-Day Simulation Escalated on {req.sensor_id}"}
+
+@app.post("/api/restore")
+async def restore_device(req: ActionRequest):
+    """Levanta mitigaciones de cuarentena preventivas en el dispositivo IoT."""
+    control_payload = {"action": "restore"}
+    mqtt_client.publish(f"control/{req.sensor_id}", json.dumps(control_payload))
+    return {"status": "success", "message": f"Quarantine Override Verified for {req.sensor_id}"}
 
 @app.websocket("/ws/telemetry")
-async def websocket_telemetry(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket):
+    """Multiplexa el backend en vivo (telemetría + anomalies combinados) al dashboard."""
     await websocket.accept()
     try:
         while True:
-            # Envia una foto del estado actual a 1Hz para visualización fluida
-            with state_lock:
-                data = {
-                    "devices": state,
-                    "alerts": alerts
-                }
-            await websocket.send_json(data)
+            # Transmit the most synchronized state map at ~1Hz frame-rate mapping requirement
+            if latest_telemetry:
+                await websocket.send_json(latest_telemetry)
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        print("[Backend] Cliente WS desconectado")
+        print("Frontend WebSocket Connection Closed")
+    except Exception as e:
+        print(f"WebSocket Pipeline Error: {e}")

@@ -1,134 +1,109 @@
 import os
 import time
 import json
-import threading
+import logging
 import numpy as np
-from sklearn.ensemble import IsolationForest
 import paho.mqtt.client as mqtt
-from influxdb_client import InfluxDBClient, Point
-from influxdb_client.client.write_api import SYNCHRONOUS
+from sklearn.ensemble import IsolationForest
+from influxdb_client import InfluxDBClient, Point, WritePrecision
 
-# Configuración MQTT
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
+# Setup Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - EDR Detector - %(levelname)s - %(message)s')
+
+# MQTT Config
+BROKER = os.getenv("MQTT_BROKER", "mosquitto")
+PORT = int(os.getenv("MQTT_PORT", 1883))
 TELEMETRY_TOPIC = "telemetry/#"
 
-# Configuración InfluxDB
-INFLUXDB_URL = os.environ.get("INFLUXDB_URL", "http://localhost:8086")
-INFLUXDB_TOKEN = os.environ.get("INFLUXDB_TOKEN", "supersecrettoken123")
-INFLUXDB_ORG = os.environ.get("INFLUXDB_ORG", "soc_org")
-INFLUXDB_BUCKET = os.environ.get("INFLUXDB_BUCKET", "telemetry")
+# InfluxDB Config
+INFLUX_URL = "http://influxdb:8086"
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "super_secret_token_123")
+INFLUX_ORG = os.getenv("INFLUX_ORG", "soc_org")
+INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "telemetry")
 
-# Variables ML
-MODEL = IsolationForest(contamination=0.05, random_state=42)
-MODEL_READY = False
+# ML Model Setup - isolation forest with contamination=0.05
+ml_model = IsolationForest(contamination=0.05, random_state=42, n_estimators=100)
 
 def pre_train_model():
-    """
-    Pre-entrena el modelo con 2000 muestras de telemetría sintética (estado NORMAL).
-    Esto establece una línea base de comportamiento seguro en la memoria RAM,
-    evitando que el sistema necesite días de entrenamiento.
-    """
-    global MODEL_READY, MODEL
-    print("[Detector] Generando 2000 muestras sintéticas para pre-entrenamiento (Línea Base)...")
-    
-    # Simula estado "NORMAL" (mismas distribuciones que el simulador o parecidas)
-    bytes_in = np.random.normal(500, 50, 2000)
-    bytes_out = np.random.normal(150, 20, 2000)
-    packet_rate = np.random.poisson(10, 2000)
-    tcp_flags_syn = max(0, int(np.random.normal(1, 1))) * np.ones(2000) # Simplificación
-    
-    # Preparar matriz de características
-    X_train = np.column_stack((bytes_in, bytes_out, packet_rate, tcp_flags_syn))
-    
-    print("[Detector] Entrenando IsolationForest...")
-    MODEL.fit(X_train)
-    MODEL_READY = True
-    print("[Detector] Modelo pre-entrenado y listo.")
+    logging.info("Pre-training ML model with 2000 synthetic baseline samples...")
+    X_train = []
+    for _ in range(2000):
+        # Emulate normal operation logic from simulator
+        bytes_out = max(0, int(np.random.normal(loc=150.0, scale=30.0)))
+        bytes_in = max(0, int(np.random.normal(loc=500.0, scale=100.0)))
+        packet_rate = np.random.poisson(lam=10.0)
+        tcp_flags_syn = 1 if np.random.random() < 0.05 else 0
+        X_train.append([bytes_in, bytes_out, packet_rate, tcp_flags_syn])
+    ml_model.fit(X_train)
+    logging.info("✅ Pre-training complete!")
 
-def process_telemetry(payload, mqtt_client, write_api):
+def on_connect(client, userdata, flags, rc):
+    logging.info(f"Connected to Mosquitto (code {rc}). Securing telemetry streams.")
+    client.subscribe(TELEMETRY_TOPIC)
+
+def on_message(client, userdata, msg):
     try:
-        device_id = payload.get("device_id")
-        status = payload.get("status")
-
-        # Extraemos features
-        b_in = payload.get("bytes_in", 0)
-        b_out = payload.get("bytes_out", 0)
-        p_rate = payload.get("packet_rate", 0)
-        t_syn = payload.get("tcp_flags_syn", 0)
-
-        # Si el dispositivo ya está aislado, el simulador solo manda pings sin métricas.
-        # No hace falta pasarlo por el modelo.
-        if status == "QUARANTINED":
-            return
-
-        # Análisis con ML ML ML
-        X_test = np.array([[b_in, b_out, p_rate, t_syn]])
-        prediction = MODEL.predict(X_test)[0]          # 1: Normal, -1: Anomalía
-        score = MODEL.decision_function(X_test)[0]     # Score continuo
+        # Load JSON from MQTT
+        payload = json.loads(msg.payload.decode())
         
-        is_anomaly = True if prediction == -1 else False
-
-        # Guardar telemetría cruda y el score de ML en InfluxDB
-        point = Point("network_traffic") \
-            .tag("device_id", device_id) \
-            .tag("status", status) \
-            .field("bytes_in", float(b_in)) \
-            .field("bytes_out", float(b_out)) \
-            .field("packet_rate", float(p_rate)) \
-            .field("tcp_flags_syn", float(t_syn)) \
-            .field("anomaly_score", float(score)) \
-            .field("is_anomaly", int(is_anomaly))
+        # Omit tracking metrics directly if the device is already quarantined securely
+        if payload.get("status") == "QUARANTINED":
+            return
             
-        write_api.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=point)
+        sensor_id = payload.get("sensor_id", "unknown")
+        bytes_in = float(payload.get("bytes_in", 0))
+        bytes_out = float(payload.get("bytes_out", 0))
+        packet_rate = float(payload.get("packet_rate", 0))
+        tcp_flags_syn = float(payload.get("tcp_flags_syn", 0))
         
-        # Publicar el score para el Response Handler via MQTT
-        # Esto desacopla la detección de la respuesta
-        score_payload = {
-            "device_id": device_id,
+        # Extraction logic
+        features = [[bytes_in, bytes_out, packet_rate, tcp_flags_syn]]
+        prediction = ml_model.predict(features)[0]  # -1 for anomaly
+        raw_score = ml_model.decision_function(features)[0]
+        
+        # Normalized inverse metric (higher = anomaly risk)
+        normalized_anomaly_score = float(-raw_score)
+        is_anomaly = 1 if prediction == -1 else 0
+
+        # Save event to TSDB (InfluxDB)
+        with InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG) as idb_client:
+            write_api = idb_client.write_api()
+            point = Point("network_telemetry") \
+                .tag("sensor_id", sensor_id) \
+                .field("bytes_in", bytes_in) \
+                .field("bytes_out", bytes_out) \
+                .field("packet_rate", packet_rate) \
+                .field("tcp_flags_syn", tcp_flags_syn) \
+                .field("anomaly_score", normalized_anomaly_score) \
+                .field("is_anomaly", int(is_anomaly)) \
+                .time(time.time_ns(), WritePrecision.NS)
+            write_api.write(bucket=INFLUX_BUCKET, record=point)
+        
+        # Pipe evaluation out to internal Mosquitto topic for response_handler execution
+        eval_payload = {
+            "sensor_id": sensor_id,
+            "anomaly_score": normalized_anomaly_score,
             "is_anomaly": is_anomaly,
-            "score": score,
-            "timestamp": payload.get("timestamp", time.time())
+            "timestamp": payload.get("timestamp")
         }
+        client.publish("edr/evaluation", json.dumps(eval_payload))
         
-        mqtt_client.publish(f"edr/scores/{device_id}", json.dumps(score_payload))
-
     except Exception as e:
-        print(f"[Detector] Error procesando telemetría: {e}")
-
-def main():
-    pre_train_model()
-
-    # Setup InfluxDB
-    influx_client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
-    write_api = influx_client.write_api(write_options=SYNCHRONOUS)
-
-    # Setup MQTT
-    mqtt_client = mqtt.Client(client_id="edr_detector")
-    
-    def on_connect(client, userdata, flags, rc):
-        print(f"[Detector] Conectado a MQTT con código {rc}")
-        client.subscribe(TELEMETRY_TOPIC)
-        
-    def on_message(client, userdata, msg):
-        if not MODEL_READY:
-            return
-        payload = json.loads(msg.payload.decode("utf-8"))
-        process_telemetry(payload, client, write_api)
-
-    mqtt_client.on_connect = on_connect
-    mqtt_client.on_message = on_message
-
-    connected = False
-    while not connected:
-        try:
-            mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-            connected = True
-        except Exception as e:
-            print(f"[Detector] Esperando broker MQTT... {e}")
-            time.sleep(2)
-
-    mqtt_client.loop_forever()
+        logging.error(f"Error processing payload: {e}")
 
 if __name__ == "__main__":
-    main()
+    pre_train_model()
+    
+    client = mqtt.Client(client_id="edr_detector_engine")
+    client.on_connect = on_connect
+    client.on_message = on_message
+    
+    while True:
+        try:
+            client.connect(BROKER, PORT, 60)
+            break
+        except Exception:
+            logging.info("Waiting for Mosquitto Broker...")
+            time.sleep(2)
+            
+    client.loop_forever()

@@ -1,12 +1,12 @@
 FROM python:3.10-slim
 
-WORKDIR /app
+# Install essentials to avoid scientific dependency build failures in arm64
+RUN apt-get update && apt-get install -y build-essential gcc
 
-# Upgrade pip and install requirements
+WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy simulator source code
-COPY iot_device.py .
+COPY . .
 
 CMD ["python", "-u", "iot_device.py"]

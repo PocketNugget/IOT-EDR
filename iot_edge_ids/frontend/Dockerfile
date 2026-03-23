@@ -1,11 +1,14 @@
-FROM node:20-alpine
+FROM node:18-alpine
 
 WORKDIR /app
+
 COPY package*.json ./
 RUN npm install
+
 COPY . .
 
-# Expone el puerto por defecto de Vite
-EXPOSE 5173
+# Build step required to make Docker image smaller theoretically or run heavily via dev
+EXPOSE 3000
 
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+# Using dev server to map to localhost accurately 
+CMD ["npm", "run", "dev", "--", "--host"]
