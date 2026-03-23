@@ -1,24 +1,23 @@
-import time
-import requests
+import json
+import paho.mqtt.client as mqtt
 
-API_URL = "http://localhost:8002/api/action"
+BROKER = "localhost"
+PORT = 1883
 DEVICE_ID = "switch_main_door" 
 
 print(f"🚀 Iniciando simulación de Infección Mirai (Escaneo de Puertos HTTP/Telnet)")
 print(f"🎯 Objetivo: Smart Switch (IoT de baja entropía - {DEVICE_ID})")
 
-payload = {
-    "device_id": DEVICE_ID,
-    "action": "attack"
-}
+payload = {"action": "attack"}
 
 try:
-    print(f"[*] Inyectando payload malicioso vía API C2...")
-    response = requests.post(API_URL, json=payload, timeout=5)
-    if response.status_code == 200:
-        print("[+] 💀 Dispositivo Comprometido Exitosamente.")
-        print("[!] Observa el Dashboard SOC para visualizar la reacción predictiva del IsolationForest.")
-    else:
-        print("[-] Falló la inyección por error en el endpoint.")
+    print(f"[*] Inyectando payload malicioso directamente al bus MQTT físico (Comprometiendo nodo)...")
+    client = mqtt.Client(client_id="attacker_mirai_1")
+    client.connect(BROKER, PORT, 60)
+    client.publish(f"home/control/{DEVICE_ID}", json.dumps(payload))
+    client.disconnect()
+    
+    print("[+] 💀 Dispositivo Comprometido Exitosamente.")
+    print("[!] Observa el Dashboard SOC para visualizar la reacción defensiva del IsolationForest.")
 except Exception as e:
-    print(f"[-] Error de red crítico: {e}")
+    print(f"[-] Error de red (MQTT Bus Inaccesible): {e}")

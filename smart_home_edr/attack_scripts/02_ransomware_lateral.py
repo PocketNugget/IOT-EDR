@@ -1,24 +1,23 @@
-import time
-import requests
+import json
+import paho.mqtt.client as mqtt
 
-API_URL = "http://localhost:8002/api/action"
+BROKER = "localhost"
+PORT = 1883
 DEVICE_ID = "hub_central"
 
 print(f"🚀 Iniciando simulación de Movimiento Lateral y Ransomware")
 print(f"🎯 Objetivo: Smart Hub (Coordinador de la red del Ecosistema Doméstico - {DEVICE_ID})")
 
-payload = {
-    "device_id": DEVICE_ID,
-    "action": "attack"
-}
+payload = {"action": "attack"}
 
 try:
-    print(f"[*] Infiltrando el orquestador principal del hogar...")
-    response = requests.post(API_URL, json=payload, timeout=5)
-    if response.status_code == 200:
-        print("[+] 💀 Hub comprometido y propagando anomalías volumétricas a la ruta de red.")
-        print("[!] Monitorea como el Threshold Model identifica la diferencia entre un OTA real vs Escaneo Ransomware.")
-    else:
-        print("[-] Falló la inyección por el plano de control.")
+    print(f"[*] Infiltrando el orquestador principal del hogar vía protocolo físico...")
+    client = mqtt.Client(client_id="attacker_ransom_2")
+    client.connect(BROKER, PORT, 60)
+    client.publish(f"home/control/{DEVICE_ID}", json.dumps(payload))
+    client.disconnect()
+    
+    print("[+] 💀 Hub comprometido y propagando anomalías volumétricas a la ruta de red.")
+    print("[!] Monitorea como el Threshold Model identifica la diferencia entre un OTA real vs Escaneo Ransomware.")
 except Exception as e:
-    print(f"[-] Error fatal C2 de inyección: {e}")
+    print(f"[-] Error fatal de inyección en bus MQTT: {e}")
