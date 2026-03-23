@@ -1,0 +1,79 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: smarthome_mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - home_network
+    restart: unless-stopped
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: smarthome_influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=soc_org
+      - DOCKER_INFLUXDB_INIT_BUCKET=telemetry
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=super_secret_token_123
+    networks:
+      - home_network
+    restart: unless-stopped
+
+  home_simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: smarthome_simulator
+    networks:
+      - home_network
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+  edr_engine:
+    build:
+      context: ./edr
+      dockerfile: Dockerfile
+    container_name: smarthome_ml_engine
+    networks:
+      - home_network
+    depends_on:
+      - mosquitto
+      - influxdb
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smarthome_backend
+    ports:
+      - "8002:8000"
+    networks:
+      - home_network
+    depends_on:
+      - mosquitto
+      - influxdb
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: smarthome_dashboard
+    ports:
+      - "3002:3000"
+    networks:
+      - home_network
+    restart: unless-stopped
+
+networks:
+  home_network:
+    driver: bridge
