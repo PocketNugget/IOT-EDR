@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: soc_mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+    networks:
+      - soc_network
+    restart: unless-stopped
+    platform: linux/arm64
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: soc_influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword123
+      - DOCKER_INFLUXDB_INIT_ORG=soc_org
+      - DOCKER_INFLUXDB_INIT_BUCKET=telemetry
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=supersecrettoken123
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    networks:
+      - soc_network
+    restart: unless-stopped
+    platform: linux/arm64
+
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: soc_simulator
+    environment:
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+    networks:
+      - soc_network
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+    platform: linux/arm64
+
+  edr_engine:
+    build:
+      context: ./edr
+      dockerfile: Dockerfile
+    container_name: soc_edr_engine
+    environment:
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=supersecrettoken123
+      - INFLUXDB_ORG=soc_org
+      - INFLUXDB_BUCKET=telemetry
+    networks:
+      - soc_network
+    depends_on:
+      - mosquitto
+      - influxdb
+    restart: unless-stopped
+    platform: linux/arm64
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: soc_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=supersecrettoken123
+      - INFLUXDB_ORG=soc_org
+      - INFLUXDB_BUCKET=telemetry
+    networks:
+      - soc_network
+    depends_on:
+      - mosquitto
+      - influxdb
+    restart: unless-stopped
+    platform: linux/arm64
+
+networks:
+  soc_network:
+    driver: bridge
+
+volumes:
+  mosquitto_data:
+  influxdb_data:
