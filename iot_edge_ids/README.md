@@ -1,46 +1,51 @@
 # Edge EDR (Endpoint Detection & Response) for IoT
 
-Este proyecto implementa un EDR perimetral (Edge EDR) enfocado en dispositivos IoT, empleando capacidades de detección de anomalías (Zero-Day) mediante un modelo de Machine Learning (`IsolationForest`), con la habilidad de realizar respuesta autónoma aislando dispositivos comprometidos de la red.
+Plataforma de seguridad IoT en el borde diseñada para operar en Raspberry Pi 5 (`linux/arm64`). Utiliza Machine Learning (`IsolationForest` de Scikit-learn) para detectar ataques Zero-Day o anomalías en la telemetría, ejecutando aislamiento y contención de manera autónoma a través de MQTT.
 
 ## Arquitectura del Sistema
 
-El sistema está diseñado para ser desplegado en entornos con arquitectura `arm64` (como Raspberry Pi 5) y se divide en 5 contenedores principales, orquestados por Docker Compose conectados a través de una red interna dedicada (`soc_network`):
+El sistema implementa 6 contenedores principales en Docker Compose:
 
-1. **Mosquitto (MQTT Broker):** El bus de eventos y mensajería del sistema.
-2. **InfluxDB v2 (TSDB):** Base de datos de series temporales que almacena la telemetría enviada por los dispositivos y los _Anomaly Scores_ producidos por el EDR.
-3. **IoT Simulator:** Dispositivo simulado que genera tráfico de red (matemáticamente modelado) hacia el broker MQTT.
-4. **EDR Engine:** Motor perimetral de Machine Learning que evalúa anomalías y emite órdenes de cuarentena.
-5. **Backend (API + WebSocket):** Creado en FastAPI, ofrece endpoints REST para la interacción del usuario y WebSockets para actualización de datos en tiempo real al dashboard Frontend.
+1. **Mosquitto (MQTT Broker):** El bus de eventos principal. Expone puertos 1883 (TCP) y 9001 (WebSockets).
+2. **InfluxDB v2:** Base de datos TSDB para telemetría a largo plazo.
+3. **IoT Simulator (`simulator/`):** Simula variables de red (bytes in/out, packets, TCP flags) bajo modelos matemáticos de distribución Gaussiana y de Poisson.
+4. **EDR Engine (`edr/`):** Escucha `telemetry/#`. Pre-entrena un modelo de `IsolationForest` al inicio. Escribe scores en InfluxDB y emite órdenes de cuarentena automáticas al broker MQTT si detecta rachas críticas de anomalías.
+5. **REST & WebSocket API (`backend/`):** Aplicación FastAPI asíncrona que expone endpoints de control y transmite el estado general por WebSockets.
+6. **SOC UI (`frontend/`):** Dashboard React + Tailwind CSS + Recharts que visualiza la red, los incidentes y permite interacción manual bajo un tema industrial / Ciberseguridad.
 
-```mermaid
-graph TD;
-    Sim(IoT Simulator) -- MQTT (telemetry) --> Mosquitto;
-    Mosquitto -- MQTT (telemetry) --> ED(EDR Engine);
-    ED -- HTTP POST --> I(InfluxDB);
-    I -- Query / WS --> Back(Backend);
-    ED -- MQTT (quarantine) --> Mosquitto;
-    Mosquitto -- MQTT (control) --> Sim;
-    Back -- API / WS --> Front(React SOC Dashboard);
-```
+## Flujo de Detección y Contención (Autonomous Response)
 
-## Flujo de Telemetría y Contención
+1. El simulador emite telemetría a `telemetry/sensor_01`.
+2. El EDR calcula el *Anomaly Score* (-1 = anomalía, 1 = normal) y lo publica en `edr/scores/sensor_01`.
+3. Si el dispositivo mantiene 5 lecturas anómalas consecutivas (mitigación de falsos positivos), el *Response Handler* del EDR ordena el aislamiento lanzando el comando `quarantine` en el canal MQTT `control/sensor_01`.
+4. El simulador, al recibir el comando de contención restrictivo vía MQTT, detiene los flujos simulados y entra en un estado inerte y seguro (QUARANTINED), emitiendo sólo un latido de vida cada 10 segundos.
 
-1. El simulador IoT genera y envía métricas de red a intervalos regulares hacia `telemetry/sensor_01`.
-2. El EDR recibe las métricas y calcula un score de anomalía utilizando `IsolationForest`.
-3. Ambos, la telemetría cruda y el _anomaly score_, persisten en InfluxDB.
-4. Si los puntajes de anomalía superan el límite consistentemente (reduciendo falsos positivos), el EDR emite un comando de acción de `quarantine` hacia The IoT Simulator a través del tópico `control/sensor_01`.
-5. El dispositivo afectado, al recibir el comando, se aísla deteniendo sus emisiones normales.
+## Endpoints de la API
+
+- `POST /api/attack/{device_id}`: Fuerza al simulador a entrar en estado `UNDER_ATTACK` (Simulación Zero-Day), generando picos exponenciales de tráfico.
+- `POST /api/restore/{device_id}`: Restaura al simulador al estado `NORMAL`.
+
+- `GET /ws/telemetry`: Conexión de WebSocket para recibir datos de telemetría, score de anomalías y alertas críticas a una frecuencia de 1Hz.
 
 ## Instrucciones de Despliegue Local
 
-1. Clona este repositorio y navega hasta el directorio del proyecto.
-2. Asegúrate de tener Docker y Docker Compose instalados.
-3. El proyecto está pre-configurado para construirse y correr en arquitecturas `linux/arm64`.
+### Requisitos Básicos
+- Docker y Docker Compose
+- Sistema operativo macOS, Linux o Raspberry Pi OS. 
 
-Ejecuta el siguiente comando para levantar el entorno completo:
+1. Clona este repositorio.
+2. Despliega la plataforma en tu entorno usando Docker Compose.
 
 ```bash
 docker-compose up -d --build
 ```
 
-(*Nota: La estructura será completada y ampliada en las fases siguientes del desarrollo.*)
+### Accesos
+
+- **SOC Dashboard (Frontend React):** [http://localhost:5173](http://localhost:5173)
+- **FastAPI Backend Swagger (Documentación):** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **InfluxDB Admin UI:** [http://localhost:8086](http://localhost:8086) (Usuario: admin / Contraseña: adminpassword123)
+
+## Autor y Rol
+
+Desarrollado bajo el rol de Arquitecto de Ciberseguridad Enterprise & Ingeniero DevSecOps.
