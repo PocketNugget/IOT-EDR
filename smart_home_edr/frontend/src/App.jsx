@@ -117,13 +117,6 @@ export default function App() {
                         ${(isIso || isAttacking) ? 'bg-slate-800/50 text-slate-600 border-slate-700/50 cursor-not-allowed' : 'bg-blue-900/10 border-blue-800 text-blue-400 hover:bg-blue-600 hover:text-white'}`}>
                       <Download className="w-3 h-3"/> FORCE OTA
                     </button>
-                    <button 
-                        onClick={() => sendAction(device.metrics.device_id, 'attack')} 
-                        disabled={isIso || isAttacking} 
-                        className={`flex-1 text-[10px] tracking-widest py-2 rounded flex justify-center items-center gap-1 font-bold transition-all border
-                        ${(isIso || isAttacking) ? 'bg-slate-800/50 text-slate-600 border-slate-700/50 cursor-not-allowed' : 'bg-orange-900/10 border-orange-800 text-orange-400 hover:bg-orange-600 hover:text-white'}`}>
-                      <Zap className="w-3 h-3"/> INJECT BOT
-                    </button>
                     {isIso && (
                       <button 
                         onClick={() => sendAction(device.metrics.device_id, 'restore')} 
