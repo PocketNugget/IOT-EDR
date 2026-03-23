@@ -1,84 +1,58 @@
-# IoT Edge EDR (Endpoint Detection & Response) 🛡️
+# 🏠🛡️ IOT-EDR — Smart Home Edge Detection & Response
 
-Plataforma de seguridad IoT en el borde con capacidades de respuesta autónoma (Zero-Trust), inspirada en Darktrace y Armis. Diseñada para ejecutarse nativamente en arquitectura `linux/arm64` como la de Raspberry Pi 5.
+> **Plataforma EDR contextualizada para el hogar inteligente.**  
+> Detecta amenazas Zero-Day con Machine Learning, aísla dispositivos autónomamente y expone un panel SOC en tiempo real.
 
-## 🏗️ Arquitectura del Sistema
+---
 
-```mermaid
-graph TD
-    subgraph env [Ecosistema Físico & Bus de Datos]
-        sim[("📡 Simuladores de Nodos (Edge)")] 
-        mqtt{"🌐 Mosquitto (MQTT Event Bus)"}
-        sim -- "Transmite Telemetría Cruda" --> mqtt
-    end
+## 📚 Documentación Completa
 
-    subgraph pipeline [EDR ML Pipeline Autónomo]
-        ml["🧠 ML Detector (IsolationForest)"]
-        mitig["🛡️ Auto-Response / Mitigation Handler"]
-        mqtt -- "Suscribe (telemetry/#)" --> ml
-        ml -- "Evaluación de Amenazas (Scores)" --> mqtt
-        mqtt -- "Eventos Críticos" --> mitig
-        mitig -. "Inyecta Orden de Cuarentena (C2)" .-> mqtt
-    end
+La documentación técnica detallada del proyecto se encuentra en:
 
-    subgraph control [Backend y Persistencia]
-        fastapi["⚙️ FastAPI (Control Plane)"]
-        tsdb[("💾 InfluxDB v2 (Time-Series DB)")]
-        mqtt -- "Sincronización Múltiple" --> fastapi
-        ml -- "Persistencia Histórica" --> tsdb
-    end
+**[📄 `smart_home_edr/README.md`](smart_home_edr/README.md)**
 
-    subgraph ui [Centro de Operaciones de Seguridad]
-        react["🖥️ React SOC UI Dashboard"]
-        fastapi -- "Tubería Sub-milisegundo (WebSocket)" --> react
-        react -- "Acciones REST (Force OTA / Recover)" --> fastapi
-    end
+Incluye:
+- Diagrama Mermaid de arquitectura completa
+- Documentación del Simulador IoT (11 dispositivos)
+- Documentación del Motor ML (IsolationForest × 5 perfiles)
+- Referencia completa de la REST API (FastAPI)
+- Documentación del SOC Dashboard (React)
+- Guía de Attack Scripts Red Team
+- Esquema de InfluxDB
+- Casos de uso y testing
+- Consideraciones de seguridad
 
-    mqtt -. "Ejecución de Aislamiento Físico" .-> sim
+---
 
-    style sim fill:#1e293b,stroke:#0f172a,stroke-width:2px,color:#fff
-    style mqtt fill:#065f46,stroke:#047857,stroke-width:2px,color:#fff
-    style ml fill:#dc2626,stroke:#b91c1c,stroke-width:2px,color:#fff
-    style mitig fill:#b91c1c,stroke:#991b1b,stroke-width:4px,color:#fff
-    style fastapi fill:#4338ca,stroke:#3730a3,stroke-width:2px,color:#fff
-    style tsdb fill:#854d0e,stroke:#713f12,stroke-width:2px,color:#fff
-    style react fill:#0f172a,stroke:#0ea5e9,stroke-width:3px,color:#fff
-```
-
-### Componentes Core
-1. **IoT Simulator:** Emula un sensor IoT enviando telemetría de red. Genera tráfico anómalo (Exfiltración/DDoS) inyectable mediante comandos.
-2. **Broker MQTT (Mosquitto):** Bus de eventos de baja latencia para mensajería entre microservicios locales en el borde.
-3. **EDR ML Engine (Isolation Forest):** Escucha el tráfico, entrena un modelo base de normalidad y aísla desviaciones extremas. Evalúa el riesgo y genera Anomaly Scores en InfluxDB.
-4. **Response Handler:** Analiza la persistencia de las anomalías (>5 payloads maliciosos consecutivos). Mitiga activamente enviando paquetes remotos de `quarantine` sobre MQTT a los dispositivos infectados para aislar el host físicamente.
-5. **TSDB (InfluxDB v2):** Optimizado para retención de millones de datos temporales, asegurando la telemetría del SOC.
-6. **Backend (FastAPI):** Expone APIs REST para orquestación y multiplexa la telemetría consumida por MQTT hacia WebSockets en vivo.
-7. **Frontend (React + Tailwind):** Dashboard SOC cibernético estilo industrial, mostrando analíticas cruzadas e inyección de contingencias críticas.
-
-## 🚀 Guía de Despliegue en Producción (Raspberry Pi 5)
-
-La arquitectura de dependencias Python ha sido fortificada con `build-essential` para compilar binarios matemáticos en `linux/arm64`.
+## 🚀 Inicio Rápido
 
 ```bash
-cd iot_edge_ids
+git clone https://github.com/PocketNugget/IOT-EDR.git
+cd IOT-EDR/smart_home_edr
 
-# Levanta todo el stack local
 docker-compose up -d --build
 ```
 
-### Puntos de Acceso Externos
-- **Frontend SOC Dashboard:** `http://localhost:3000`
-- **Backend API / Docs:** `http://localhost:8001/docs`
-- **InfluxDB UI:** `http://localhost:8086` (User: `admin` / Password: `adminpassword`)
+| Servicio | URL |
+|---|---|
+| **SOC Dashboard** | http://localhost:3002 |
+| **Backend API** | http://localhost:8002/docs |
+| **InfluxDB** | http://localhost:8086 |
 
-## 📡 Endpoints API y Control de Tráfico C2
+---
 
-### WebSockets (Telemetría SOC en Vivo)
-- `ws://localhost:8001/ws/telemetry`
+## 🏗️ Stack
 
-### Protocolos REST Activos
-- **Inyectar Ataque Zero-Day Distribuido**
-  - **Endpoint:** `POST /api/attack`
-  - **Body:** `{"sensor_id": "sensor_01"}`
-- **Restaurar Tráfico (Override Cuarentena Defensiva)**
-  - **Endpoint:** `POST /api/restore`
-  - **Body:** `{"sensor_id": "sensor_01"}`
+| Componente | Tecnología |
+|---|---|
+| Smart Home Simulator | Python + asyncio + paho-mqtt |
+| EDR ML Engine | scikit-learn (IsolationForest) + InfluxDB |
+| Backend API | FastAPI + WebSocket |
+| SOC Dashboard | React + Vite + Tailwind CSS + Recharts |
+| Message Bus | Eclipse Mosquitto (MQTT) |
+| Time-Series DB | InfluxDB v2 |
+| Orquestación | Docker Compose |
+
+---
+
+## 🎯 Target: Raspberry Pi 5 (`linux/arm64`)
