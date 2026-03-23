@@ -2,10 +2,12 @@ import os
 import time
 import json
 import logging
+import threading
 import numpy as np
 import paho.mqtt.client as mqtt
 from sklearn.ensemble import IsolationForest
 from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import ASYNCHRONOUS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Context_EDR - %(levelname)s - %(message)s')
 
@@ -36,6 +38,31 @@ clean_streak:    dict[str, int] = {}   # consecutive clean readings
 # A real attack generates sustained abnormal traffic — not occasional spikes.
 PERSISTENCE_THRESHOLD = 8
 CLEAN_RESET_STREAK = 3   # consecutive clean ticks needed to reset strike counter
+
+# ── InfluxDB — persistent connection (opened once at startup) ──
+# Using ASYNCHRONOUS write_api so writes never block the MQTT thread.
+_influx_client: InfluxDBClient | None = None
+_write_api = None
+
+def init_influx():
+    global _influx_client, _write_api
+    try:
+        _influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+        _write_api = _influx_client.write_api(write_options=ASYNCHRONOUS)
+        logging.info("✅ InfluxDB async write_api initialized.")
+    except Exception as e:
+        logging.warning(f"InfluxDB init failed (metrics won't be persisted): {e}")
+
+def write_to_influx(point: Point):
+    """Fire-and-forget InfluxDB write in a daemon thread — never blocks MQTT."""
+    def _write():
+        try:
+            if _write_api is not None:
+                _write_api.write(bucket=INFLUX_BUCKET, record=point)
+        except Exception as e:
+            logging.debug(f"InfluxDB write skipped: {e}")
+    t = threading.Thread(target=_write, daemon=True)
+    t.start()
 
 
 def pre_train_models():
@@ -161,22 +188,20 @@ def on_message(client, userdata, msg):
                 anomaly_tracker[device_id] = max(0, anomaly_tracker[device_id] - 1)
                 clean_streak[device_id] = 0
 
-        # ── Write to InfluxDB ──
-        with InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG) as idb:
-            write_api = idb.write_api()
-            point = (
-                Point("home_telemetry")
-                .tag("device_id", device_id)
-                .tag("device_type", device_type)
-                .field("bytes_in", bytes_in)
-                .field("bytes_out", bytes_out)
-                .field("port", port)
-                .field("packet_rate", packet_rate)
-                .field("anomaly_score", normalized_score)
-                .field("is_anomaly", int(is_anomaly))
-                .time(time.time_ns(), WritePrecision.NS)
-            )
-            write_api.write(bucket=INFLUX_BUCKET, record=point)
+        # ── Write to InfluxDB (non-blocking, daemon thread) ──
+        point = (
+            Point("home_telemetry")
+            .tag("device_id", device_id)
+            .tag("device_type", device_type)
+            .field("bytes_in", bytes_in)
+            .field("bytes_out", bytes_out)
+            .field("port", port)
+            .field("packet_rate", packet_rate)
+            .field("anomaly_score", normalized_score)
+            .field("is_anomaly", int(is_anomaly))
+            .time(time.time_ns(), WritePrecision.NS)
+        )
+        write_to_influx(point)   # never blocks MQTT loop
 
         # ── Forward evaluation to Backend ──
         eval_payload = {
@@ -192,6 +217,7 @@ def on_message(client, userdata, msg):
 
 if __name__ == "__main__":
     pre_train_models()
+    init_influx()   # open persistent async DB connection before starting MQTT
 
     client = mqtt.Client(client_id="edr_context_detector")
     client.on_connect = on_connect
